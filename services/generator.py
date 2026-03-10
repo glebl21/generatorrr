@@ -2,58 +2,16 @@ import aiohttp
 import asyncio
 import logging
 import urllib.parse
-from config import (
-    HF_TOKEN, HF_IMAGE_MODEL,
-    STABILITY_KEY, REPLICATE_TOKEN, IMAGE_WIDTH, IMAGE_HEIGHT
-)
+from config import HF_TOKEN, STABILITY_KEY, REPLICATE_TOKEN
 
 logger = logging.getLogger(__name__)
 
 
 # ============================================================
-#  ПЕРЕВОД ПРОМПТА
+#  ПЕРЕВОД
 # ============================================================
 
-# Простой словарь частых русских слов для перевода без API
-RU_EN_DICT = {
-    "кот": "cat", "кошка": "cat", "собака": "dog", "пёс": "dog",
-    "девушка": "girl", "женщина": "woman", "мужчина": "man", "парень": "guy",
-    "лес": "forest", "море": "sea", "океан": "ocean", "горы": "mountains",
-    "город": "city", "дом": "house", "замок": "castle", "дворец": "palace",
-    "закат": "sunset", "рассвет": "sunrise", "ночь": "night", "день": "day",
-    "небо": "sky", "облака": "clouds", "звёзды": "stars", "луна": "moon",
-    "солнце": "sun", "огонь": "fire", "вода": "water", "земля": "earth",
-    "красивый": "beautiful", "красивая": "beautiful", "огромный": "huge",
-    "маленький": "small", "тёмный": "dark", "светлый": "bright",
-    "реалистично": "realistic", "реалистичный": "realistic",
-    "аниме": "anime", "мультик": "cartoon", "рисунок": "drawing",
-    "портрет": "portrait", "пейзаж": "landscape", "природа": "nature",
-    "фото": "photo", "фотография": "photograph", "картина": "painting",
-    "цветы": "flowers", "цветок": "flower", "дерево": "tree", "трава": "grass",
-    "красный": "red", "синий": "blue", "зелёный": "green", "белый": "white",
-    "чёрный": "black", "золотой": "golden", "серебряный": "silver",
-    "дракон": "dragon", "единорог": "unicorn", "волк": "wolf", "лиса": "fox",
-    "робот": "robot", "космос": "space", "планета": "planet", "галактика": "galaxy",
-    "магия": "magic", "фэнтези": "fantasy", "будущее": "future",
-    "над": "above", "под": "under", "рядом": "near", "вокруг": "around",
-    "и": "and", "в": "in", "на": "on", "с": "with", "без": "without",
-}
-
-def simple_translate(text: str) -> str:
-    """Простой перевод по словарю + добавляем качество"""
-    words = text.lower().split()
-    translated = []
-    for word in words:
-        clean = word.strip('.,!?')
-        translated.append(RU_EN_DICT.get(clean, clean))
-    result = " ".join(translated)
-    # Добавляем качество если не указано
-    if "4k" not in result.lower() and "quality" not in result.lower():
-        result += ", high quality, detailed"
-    return result
-
 async def translate_to_english(prompt: str) -> str:
-    """Перевод через MyMemory API (бесплатный, без ключа)"""
     try:
         url = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(prompt)}&langpair=ru|en"
         async with aiohttp.ClientSession() as session:
@@ -61,14 +19,12 @@ async def translate_to_english(prompt: str) -> str:
                 if resp.status == 200:
                     data = await resp.json()
                     translated = data.get("responseData", {}).get("translatedText", "")
-                    if translated and translated != prompt:
-                        logger.info(f"MyMemory translated: {prompt[:50]} -> {translated[:50]}")
+                    if translated and translated.upper() != prompt.upper():
+                        logger.info(f"MyMemory translated: {prompt} -> {translated}")
                         return translated
     except Exception as e:
-        logger.warning(f"MyMemory translation failed: {e}")
-
-    # Fallback — простой словарь
-    return simple_translate(prompt)
+        logger.warning(f"Translation failed: {e}")
+    return prompt
 
 def has_cyrillic(text: str) -> bool:
     return any('\u0400' <= c <= '\u04FF' for c in text)
@@ -78,44 +34,10 @@ def has_cyrillic(text: str) -> bool:
 #  ГЕНЕРАЦИЯ КАРТИНОК
 # ============================================================
 
-async def generate_image_pollinations(prompt: str) -> bytes | None:
-    """Pollinations.ai — бесплатный, без ключа"""
-    urls_to_try = [
-        f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}?width=1024&height=1024&nologo=true&model=flux",
-        f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}?width=512&height=512&nologo=true",
-    ]
-    for url in urls_to_try:
-        try:
-            logger.info(f"Trying Pollinations: {url[:80]}")
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url,
-                    timeout=aiohttp.ClientTimeout(total=90),
-                    headers={"User-Agent": "Mozilla/5.0"}
-                ) as resp:
-                    logger.info(f"Pollinations status: {resp.status}, content-type: {resp.content_type}")
-                    if resp.status == 200 and "image" in resp.content_type:
-                        data = await resp.read()
-                        if len(data) > 1000:  # минимум 1KB — точно картинка
-                            logger.info(f"Pollinations OK: {len(data)} bytes")
-                            return data
-                        else:
-                            logger.warning(f"Pollinations returned too small data: {len(data)} bytes")
-                    else:
-                        body = await resp.text()
-                        logger.warning(f"Pollinations bad response: {resp.status} | {body[:200]}")
-        except asyncio.TimeoutError:
-            logger.error("Pollinations timeout")
-        except Exception as e:
-            logger.error(f"Pollinations error: {type(e).__name__}: {e}")
-    return None
-
-
 async def generate_image_hf(prompt: str) -> bytes | None:
-    """Hugging Face — нужен бесплатный токен"""
+    """Hugging Face — бесплатный токен с huggingface.co"""
     if not HF_TOKEN:
         return None
-    # Пробуем несколько быстрых моделей
     models = [
         "black-forest-labs/FLUX.1-schnell",
         "stabilityai/stable-diffusion-xl-base-1.0",
@@ -125,57 +47,141 @@ async def generate_image_hf(prompt: str) -> bytes | None:
         try:
             url = f"https://api-inference.huggingface.co/models/{model}"
             headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-            payload = {"inputs": prompt}
-            logger.info(f"Trying HF model: {model}")
+            logger.info(f"Trying HF: {model}")
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    url, headers=headers, json=payload,
+                    url, headers=headers, json={"inputs": prompt},
                     timeout=aiohttp.ClientTimeout(total=120)
                 ) as resp:
-                    logger.info(f"HF {model} status: {resp.status}")
+                    logger.info(f"HF {model}: status={resp.status}")
                     if resp.status == 200:
                         data = await resp.read()
                         if len(data) > 1000:
-                            logger.info(f"HF OK: {len(data)} bytes from {model}")
+                            logger.info(f"HF OK: {len(data)} bytes")
                             return data
                     elif resp.status == 503:
-                        # Модель загружается, ждём
-                        logger.info(f"HF model {model} loading, waiting 20s...")
-                        await asyncio.sleep(20)
-                        # Повторная попытка
-                        async with session.post(url, headers=headers, json=payload,
-                                                timeout=aiohttp.ClientTimeout(total=120)) as resp2:
-                            if resp2.status == 200:
-                                data = await resp2.read()
+                        logger.info(f"HF model loading, wait 15s...")
+                        await asyncio.sleep(15)
+                        async with session.post(url, headers=headers, json={"inputs": prompt},
+                                                timeout=aiohttp.ClientTimeout(total=120)) as r2:
+                            if r2.status == 200:
+                                data = await r2.read()
                                 if len(data) > 1000:
                                     return data
                     else:
                         text = await resp.text()
-                        logger.warning(f"HF {model}: {resp.status} | {text[:200]}")
+                        logger.warning(f"HF {model}: {resp.status} | {text[:150]}")
         except Exception as e:
-            logger.error(f"HF {model} error: {type(e).__name__}: {e}")
+            logger.error(f"HF {model} error: {e}")
+    return None
+
+
+async def generate_image_prodia(prompt: str) -> bytes | None:
+    """
+    Prodia.com — бесплатный Stable Diffusion API, без ключа.
+    """
+    try:
+        # Шаг 1: создаём задачу
+        params = {
+            "model": "sd_xl_base_1.0.safetensors [be9edd61]",
+            "prompt": prompt,
+            "negative_prompt": "ugly, blurry, low quality, watermark",
+            "steps": 20,
+            "cfg_scale": 7,
+            "width": 1024,
+            "height": 1024,
+            "sampler": "DPM++ 2M Karras",
+        }
+        headers = {"accept": "application/json"}
+        logger.info(f"Prodia: starting job for prompt: {prompt[:60]}")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://api.prodia.com/v1/sd/generate",
+                params=params, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as resp:
+                logger.info(f"Prodia generate: {resp.status}")
+                if resp.status != 200:
+                    text = await resp.text()
+                    logger.error(f"Prodia generate failed: {text[:200]}")
+                    return None
+                job = await resp.json()
+                job_id = job.get("job")
+                if not job_id:
+                    logger.error(f"Prodia: no job id in response: {job}")
+                    return None
+                logger.info(f"Prodia job_id: {job_id}")
+
+            # Шаг 2: ждём результата
+            for i in range(30):
+                await asyncio.sleep(4)
+                async with session.get(
+                    f"https://api.prodia.com/v1/job/{job_id}",
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=15)
+                ) as resp:
+                    data = await resp.json()
+                    status = data.get("status")
+                    logger.info(f"Prodia poll {i+1}: {status}")
+                    if status == "succeeded":
+                        img_url = data.get("imageUrl")
+                        logger.info(f"Prodia succeeded, downloading: {img_url}")
+                        async with session.get(img_url, timeout=aiohttp.ClientTimeout(total=30)) as img_resp:
+                            if img_resp.status == 200:
+                                img_data = await img_resp.read()
+                                logger.info(f"Prodia image: {len(img_data)} bytes")
+                                return img_data
+                    elif status == "failed":
+                        logger.error("Prodia job failed")
+                        return None
+    except Exception as e:
+        logger.error(f"Prodia error: {type(e).__name__}: {e}")
+    return None
+
+
+async def generate_image_pollinations(prompt: str) -> bytes | None:
+    """Pollinations fallback"""
+    try:
+        url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}?width=512&height=512&nologo=true&seed={hash(prompt) % 99999}"
+        logger.info(f"Pollinations: {url[:80]}")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url, timeout=aiohttp.ClientTimeout(total=90),
+                headers={"User-Agent": "Mozilla/5.0"}
+            ) as resp:
+                logger.info(f"Pollinations: status={resp.status} content-type={resp.content_type}")
+                if resp.status == 200 and "image" in resp.content_type:
+                    data = await resp.read()
+                    if len(data) > 1000:
+                        return data
+    except Exception as e:
+        logger.error(f"Pollinations error: {e}")
     return None
 
 
 async def generate_image(prompt: str) -> bytes | None:
-    """Главная функция генерации картинки"""
-    logger.info(f"generate_image called with prompt: {prompt[:80]}")
+    logger.info(f"generate_image: '{prompt[:80]}'")
 
-    # 1. Hugging Face (если есть токен — приоритет)
+    # 1. HuggingFace (лучшее качество, нужен токен)
     if HF_TOKEN:
         logger.info("Trying HuggingFace...")
         result = await generate_image_hf(prompt)
         if result:
             return result
-        logger.warning("HuggingFace failed, falling back to Pollinations")
 
-    # 2. Pollinations (всегда как fallback)
+    # 2. Prodia (бесплатно, без ключа)
+    logger.info("Trying Prodia...")
+    result = await generate_image_prodia(prompt)
+    if result:
+        return result
+
+    # 3. Pollinations (последний fallback)
     logger.info("Trying Pollinations...")
     result = await generate_image_pollinations(prompt)
     if result:
         return result
 
-    logger.error("ALL image generation methods failed!")
+    logger.error("ALL methods failed")
     return None
 
 
@@ -184,41 +190,31 @@ async def generate_image(prompt: str) -> bytes | None:
 # ============================================================
 
 async def generate_video_replicate(prompt: str, duration: int = 5) -> bytes | None:
-    """Replicate — нужен токен (дают $5 бонус при регистрации)"""
     if not REPLICATE_TOKEN:
-        logger.warning("No REPLICATE_TOKEN set")
+        logger.warning("No REPLICATE_TOKEN")
         return None
     try:
         headers = {
             "Authorization": f"Token {REPLICATE_TOKEN}",
             "Content-Type": "application/json",
-            "Prefer": "wait"
         }
-        # minimax/video-01-live — хорошее качество
-        payload = {
-            "version": "minimax/video-01-live",
-            "input": {
-                "prompt": prompt,
-                "duration": duration,
-            }
-        }
-        logger.info(f"Starting Replicate video generation...")
+        logger.info("Replicate: starting video generation")
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 "https://api.replicate.com/v1/models/minimax/video-01-live/predictions",
-                headers=headers, json={"input": {"prompt": prompt}},
+                headers=headers,
+                json={"input": {"prompt": prompt}},
                 timeout=aiohttp.ClientTimeout(total=30)
             ) as resp:
-                logger.info(f"Replicate start status: {resp.status}")
+                logger.info(f"Replicate start: {resp.status}")
                 if resp.status not in (200, 201):
                     text = await resp.text()
-                    logger.error(f"Replicate start failed: {resp.status} | {text[:300]}")
+                    logger.error(f"Replicate start failed: {text[:300]}")
                     return None
                 prediction = await resp.json()
                 prediction_id = prediction["id"]
-                logger.info(f"Replicate prediction ID: {prediction_id}")
+                logger.info(f"Replicate prediction: {prediction_id}")
 
-            # Поллинг результата (до 4 минут)
             for i in range(48):
                 await asyncio.sleep(5)
                 async with session.get(
@@ -231,26 +227,25 @@ async def generate_video_replicate(prompt: str, duration: int = 5) -> bytes | No
                     if status == "succeeded":
                         output = data.get("output")
                         video_url = output[0] if isinstance(output, list) else output
-                        logger.info(f"Replicate succeeded, downloading: {video_url}")
-                        async with session.get(video_url, timeout=aiohttp.ClientTimeout(total=60)) as vresp:
-                            if vresp.status == 200:
-                                return await vresp.read()
+                        async with session.get(video_url, timeout=aiohttp.ClientTimeout(total=120)) as vr:
+                            if vr.status == 200:
+                                return await vr.read()
                     elif status == "failed":
                         logger.error(f"Replicate failed: {data.get('error')}")
                         return None
     except Exception as e:
-        logger.error(f"Replicate error: {type(e).__name__}: {e}")
+        logger.error(f"Replicate error: {e}")
     return None
 
 
 async def generate_video_stability(prompt: str, duration: int = 5) -> bytes | None:
-    """Stability AI video — нужен токен"""
     if not STABILITY_KEY:
         return None
     try:
-        img_data = await generate_image_pollinations(prompt)
+        img_data = await generate_image_prodia(prompt)
         if not img_data:
-            logger.error("Stability video: can't get start frame")
+            img_data = await generate_image_pollinations(prompt)
+        if not img_data:
             return None
 
         form = aiohttp.FormData()
@@ -265,10 +260,8 @@ async def generate_video_stability(prompt: str, duration: int = 5) -> bytes | No
                 data=form, timeout=aiohttp.ClientTimeout(total=60)
             ) as resp:
                 if resp.status != 200:
-                    logger.warning(f"Stability video init: {resp.status}")
                     return None
-                result = await resp.json()
-                gen_id = result.get("id")
+                gen_id = (await resp.json()).get("id")
                 if not gen_id:
                     return None
 
@@ -283,24 +276,22 @@ async def generate_video_stability(prompt: str, duration: int = 5) -> bytes | No
                     elif resp.status != 202:
                         return None
     except Exception as e:
-        logger.error(f"Stability video error: {e}")
+        logger.error(f"Stability error: {e}")
     return None
 
 
 async def generate_video(prompt: str, duration: int = 5) -> bytes | None:
-    """Главная функция генерации видео"""
-    logger.info(f"generate_video called: prompt={prompt[:60]}, duration={duration}")
+    logger.info(f"generate_video: '{prompt[:60]}', duration={duration}")
 
     if REPLICATE_TOKEN:
         result = await generate_video_replicate(prompt, duration)
         if result:
             return result
-        logger.warning("Replicate failed, trying Stability...")
 
     if STABILITY_KEY:
         result = await generate_video_stability(prompt, duration)
         if result:
             return result
 
-    logger.error("ALL video generation methods failed!")
+    logger.error("ALL video methods failed")
     return None
