@@ -56,7 +56,7 @@ async def cmd_help(message: Message):
         "  • 🖼 Картинка — 10₽\n"
         "  • 🎬 Видео 5 сек — 30₽\n"
         "  • 🎬 Видео 10 сек — 60₽\n\n"
-        "❓ Проблемы? Напишите @your_support_username"
+        "❓ Проблемы? Напишите @glebknopka"
     )
     await message.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
 
