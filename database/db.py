@@ -332,3 +332,16 @@ def use_free_video(user_id: int) -> bool:
 def get_connection_for_admin():
     """Для прямых запросов в admin handler"""
     return get_connection(), USE_POSTGRES
+
+def update_user(user_id: int, **kwargs):
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        for key, value in kwargs.items():
+            if USE_POSTGRES:
+                cursor.execute(f"UPDATE users SET {key} = %s WHERE user_id = %s", (value, user_id))
+            else:
+                cursor.execute(f"UPDATE users SET {key} = ? WHERE user_id = ?", (value, user_id))
+        conn.commit()
+    finally:
+        conn.close()
