@@ -35,22 +35,26 @@ def has_cyrillic(text: str) -> bool:
 # ============================================================
 
 async def generate_image_hf(prompt: str) -> bytes | None:
-    """Hugging Face — бесплатный токен с huggingface.co"""
+    """HuggingFace Router API (новый endpoint с 2025)"""
     if not HF_TOKEN:
         return None
     models = [
         "black-forest-labs/FLUX.1-schnell",
         "stabilityai/stable-diffusion-xl-base-1.0",
-        "runwayml/stable-diffusion-v1-5",
     ]
     for model in models:
         try:
-            url = f"https://api-inference.huggingface.co/models/{model}"
-            headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-            logger.info(f"Trying HF: {model}")
+            # Новый URL: router.huggingface.co
+            url = f"https://router.huggingface.co/hf-inference/models/{model}"
+            headers = {
+                "Authorization": f"Bearer {HF_TOKEN}",
+                "Content-Type": "application/json",
+            }
+            logger.info(f"HF Router: {model}")
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    url, headers=headers, json={"inputs": prompt},
+                    url, headers=headers,
+                    json={"inputs": prompt},
                     timeout=aiohttp.ClientTimeout(total=120)
                 ) as resp:
                     logger.info(f"HF {model}: status={resp.status}")
@@ -60,9 +64,10 @@ async def generate_image_hf(prompt: str) -> bytes | None:
                             logger.info(f"HF OK: {len(data)} bytes")
                             return data
                     elif resp.status == 503:
-                        logger.info(f"HF model loading, wait 15s...")
-                        await asyncio.sleep(15)
-                        async with session.post(url, headers=headers, json={"inputs": prompt},
+                        logger.info("HF model loading, waiting 20s...")
+                        await asyncio.sleep(20)
+                        async with session.post(url, headers=headers,
+                                                json={"inputs": prompt},
                                                 timeout=aiohttp.ClientTimeout(total=120)) as r2:
                             if r2.status == 200:
                                 data = await r2.read()
@@ -70,118 +75,132 @@ async def generate_image_hf(prompt: str) -> bytes | None:
                                     return data
                     else:
                         text = await resp.text()
-                        logger.warning(f"HF {model}: {resp.status} | {text[:150]}")
+                        logger.warning(f"HF {model}: {resp.status} | {text[:200]}")
         except Exception as e:
             logger.error(f"HF {model} error: {e}")
     return None
 
 
-async def generate_image_prodia(prompt: str) -> bytes | None:
+async def generate_image_together(prompt: str) -> bytes | None:
     """
-    Prodia.com — бесплатный Stable Diffusion API, без ключа.
+    Together.ai — бесплатный tier $25 при регистрации.
+    Переменная: TOGETHER_TOKEN
     """
+    import os
+    token = os.getenv("TOGETHER_TOKEN", "")
+    if not token:
+        return None
     try:
-        # Шаг 1: создаём задачу
-        params = {
-            "model": "sd_xl_base_1.0.safetensors [be9edd61]",
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": "black-forest-labs/FLUX.1-schnell-Free",
             "prompt": prompt,
-            "negative_prompt": "ugly, blurry, low quality, watermark",
-            "steps": 20,
-            "cfg_scale": 7,
             "width": 1024,
             "height": 1024,
-            "sampler": "DPM++ 2M Karras",
+            "steps": 4,
+            "n": 1,
+            "response_format": "b64_json",
         }
-        headers = {"accept": "application/json"}
-        logger.info(f"Prodia: starting job for prompt: {prompt[:60]}")
+        logger.info("Together.ai: generating image")
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                "https://api.prodia.com/v1/sd/generate",
-                params=params, headers=headers,
-                timeout=aiohttp.ClientTimeout(total=30)
+            async with session.post(
+                "https://api.together.xyz/v1/images/generations",
+                headers=headers, json=payload,
+                timeout=aiohttp.ClientTimeout(total=60)
             ) as resp:
-                logger.info(f"Prodia generate: {resp.status}")
-                if resp.status != 200:
-                    text = await resp.text()
-                    logger.error(f"Prodia generate failed: {text[:200]}")
-                    return None
-                job = await resp.json()
-                job_id = job.get("job")
-                if not job_id:
-                    logger.error(f"Prodia: no job id in response: {job}")
-                    return None
-                logger.info(f"Prodia job_id: {job_id}")
-
-            # Шаг 2: ждём результата
-            for i in range(30):
-                await asyncio.sleep(4)
-                async with session.get(
-                    f"https://api.prodia.com/v1/job/{job_id}",
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=15)
-                ) as resp:
+                logger.info(f"Together: status={resp.status}")
+                if resp.status == 200:
                     data = await resp.json()
-                    status = data.get("status")
-                    logger.info(f"Prodia poll {i+1}: {status}")
-                    if status == "succeeded":
-                        img_url = data.get("imageUrl")
-                        logger.info(f"Prodia succeeded, downloading: {img_url}")
-                        async with session.get(img_url, timeout=aiohttp.ClientTimeout(total=30)) as img_resp:
-                            if img_resp.status == 200:
-                                img_data = await img_resp.read()
-                                logger.info(f"Prodia image: {len(img_data)} bytes")
-                                return img_data
-                    elif status == "failed":
-                        logger.error("Prodia job failed")
-                        return None
+                    b64 = data["data"][0].get("b64_json", "")
+                    if b64:
+                        import base64
+                        img_bytes = base64.b64decode(b64)
+                        logger.info(f"Together OK: {len(img_bytes)} bytes")
+                        return img_bytes
+                else:
+                    text = await resp.text()
+                    logger.warning(f"Together: {resp.status} | {text[:200]}")
     except Exception as e:
-        logger.error(f"Prodia error: {type(e).__name__}: {e}")
+        logger.error(f"Together error: {e}")
     return None
 
 
-async def generate_image_pollinations(prompt: str) -> bytes | None:
-    """Pollinations fallback"""
+async def generate_image_getimg(prompt: str) -> bytes | None:
+    """
+    GetImg.ai — 100 бесплатных генераций в месяц.
+    Переменная: GETIMG_TOKEN
+    """
+    import os
+    token = os.getenv("GETIMG_TOKEN", "")
+    if not token:
+        return None
     try:
-        url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}?width=512&height=512&nologo=true&seed={hash(prompt) % 99999}"
-        logger.info(f"Pollinations: {url[:80]}")
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": "flux-schnell",
+            "prompt": prompt,
+            "width": 1024,
+            "height": 1024,
+            "steps": 4,
+            "output_format": "jpeg",
+            "response_format": "b64",
+        }
+        logger.info("GetImg.ai: generating")
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                url, timeout=aiohttp.ClientTimeout(total=90),
-                headers={"User-Agent": "Mozilla/5.0"}
+            async with session.post(
+                "https://api.getimg.ai/v1/flux-schnell/text-to-image",
+                headers=headers, json=payload,
+                timeout=aiohttp.ClientTimeout(total=60)
             ) as resp:
-                logger.info(f"Pollinations: status={resp.status} content-type={resp.content_type}")
-                if resp.status == 200 and "image" in resp.content_type:
-                    data = await resp.read()
-                    if len(data) > 1000:
-                        return data
+                logger.info(f"GetImg: status={resp.status}")
+                if resp.status == 200:
+                    data = await resp.json()
+                    b64 = data.get("image", "")
+                    if b64:
+                        import base64
+                        img_bytes = base64.b64decode(b64)
+                        logger.info(f"GetImg OK: {len(img_bytes)} bytes")
+                        return img_bytes
+                else:
+                    text = await resp.text()
+                    logger.warning(f"GetImg: {resp.status} | {text[:200]}")
     except Exception as e:
-        logger.error(f"Pollinations error: {e}")
+        logger.error(f"GetImg error: {e}")
     return None
 
 
 async def generate_image(prompt: str) -> bytes | None:
     logger.info(f"generate_image: '{prompt[:80]}'")
 
-    # 1. HuggingFace (лучшее качество, нужен токен)
+    # 1. HuggingFace Router (нужен токен)
     if HF_TOKEN:
-        logger.info("Trying HuggingFace...")
+        logger.info("Trying HuggingFace Router...")
         result = await generate_image_hf(prompt)
         if result:
             return result
 
-    # 2. Prodia (бесплатно, без ключа)
-    logger.info("Trying Prodia...")
-    result = await generate_image_prodia(prompt)
-    if result:
-        return result
+    # 2. Together.ai (нужен токен, $25 бонус)
+    import os
+    if os.getenv("TOGETHER_TOKEN"):
+        logger.info("Trying Together.ai...")
+        result = await generate_image_together(prompt)
+        if result:
+            return result
 
-    # 3. Pollinations (последний fallback)
-    logger.info("Trying Pollinations...")
-    result = await generate_image_pollinations(prompt)
-    if result:
-        return result
+    # 3. GetImg.ai (нужен токен, 100 бесплатных/месяц)
+    if os.getenv("GETIMG_TOKEN"):
+        logger.info("Trying GetImg.ai...")
+        result = await generate_image_getimg(prompt)
+        if result:
+            return result
 
-    logger.error("ALL methods failed")
+    logger.error("ALL image methods failed. Add HF_TOKEN, TOGETHER_TOKEN or GETIMG_TOKEN in Railway Variables.")
     return None
 
 
@@ -198,7 +217,7 @@ async def generate_video_replicate(prompt: str, duration: int = 5) -> bytes | No
             "Authorization": f"Token {REPLICATE_TOKEN}",
             "Content-Type": "application/json",
         }
-        logger.info("Replicate: starting video generation")
+        logger.info("Replicate: starting video")
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 "https://api.replicate.com/v1/models/minimax/video-01-live/predictions",
@@ -209,11 +228,10 @@ async def generate_video_replicate(prompt: str, duration: int = 5) -> bytes | No
                 logger.info(f"Replicate start: {resp.status}")
                 if resp.status not in (200, 201):
                     text = await resp.text()
-                    logger.error(f"Replicate start failed: {text[:300]}")
+                    logger.error(f"Replicate failed: {text[:300]}")
                     return None
                 prediction = await resp.json()
                 prediction_id = prediction["id"]
-                logger.info(f"Replicate prediction: {prediction_id}")
 
             for i in range(48):
                 await asyncio.sleep(5)
@@ -238,60 +256,13 @@ async def generate_video_replicate(prompt: str, duration: int = 5) -> bytes | No
     return None
 
 
-async def generate_video_stability(prompt: str, duration: int = 5) -> bytes | None:
-    if not STABILITY_KEY:
-        return None
-    try:
-        img_data = await generate_image_prodia(prompt)
-        if not img_data:
-            img_data = await generate_image_pollinations(prompt)
-        if not img_data:
-            return None
-
-        form = aiohttp.FormData()
-        form.add_field("image", img_data, content_type="image/png", filename="frame.png")
-        form.add_field("cfg_scale", "1.8")
-        form.add_field("motion_bucket_id", "127")
-
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://api.stability.ai/v2beta/image-to-video",
-                headers={"Authorization": f"Bearer {STABILITY_KEY}"},
-                data=form, timeout=aiohttp.ClientTimeout(total=60)
-            ) as resp:
-                if resp.status != 200:
-                    return None
-                gen_id = (await resp.json()).get("id")
-                if not gen_id:
-                    return None
-
-            for _ in range(30):
-                await asyncio.sleep(10)
-                async with session.get(
-                    f"https://api.stability.ai/v2beta/image-to-video/result/{gen_id}",
-                    headers={"Authorization": f"Bearer {STABILITY_KEY}", "Accept": "video/*"}
-                ) as resp:
-                    if resp.status == 200:
-                        return await resp.read()
-                    elif resp.status != 202:
-                        return None
-    except Exception as e:
-        logger.error(f"Stability error: {e}")
-    return None
-
-
 async def generate_video(prompt: str, duration: int = 5) -> bytes | None:
-    logger.info(f"generate_video: '{prompt[:60]}', duration={duration}")
+    logger.info(f"generate_video: '{prompt[:60]}'")
 
     if REPLICATE_TOKEN:
         result = await generate_video_replicate(prompt, duration)
         if result:
             return result
 
-    if STABILITY_KEY:
-        result = await generate_video_stability(prompt, duration)
-        if result:
-            return result
-
-    logger.error("ALL video methods failed")
+    logger.error("No video API available. Add REPLICATE_TOKEN in Railway Variables.")
     return None
