@@ -176,6 +176,9 @@ async def generate_image_getimg(prompt: str) -> bytes | None:
 
 
 async def generate_image(prompt: str) -> bytes | None:
+    # Улучшаем короткие промпты
+    if len(prompt.split()) <= 2:
+        prompt = f"photo of {prompt}, high quality, sharp, detailed"
     logger.info(f"generate_image: '{prompt[:80]}'")
 
     # 1. HuggingFace Router (нужен токен)
