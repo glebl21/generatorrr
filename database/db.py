@@ -1,6 +1,5 @@
 import sqlite3
 import logging
-from datetime import datetime
 from config import DB_PATH, FREE_IMAGES, FREE_VIDEOS
 
 logger = logging.getLogger(__name__)
@@ -15,21 +14,21 @@ def init_db():
     conn = get_connection()
     cursor = conn.cursor()
 
-    # Таблица пользователей
-    cursor.execute("""
+    # Таблица пользователей (DEFAULT не поддерживает ?, вставляем значения напрямую)
+    cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             username TEXT,
             full_name TEXT,
             balance INTEGER DEFAULT 0,
-            free_images INTEGER DEFAULT ?,
-            free_videos INTEGER DEFAULT ?,
+            free_images INTEGER DEFAULT {FREE_IMAGES},
+            free_videos INTEGER DEFAULT {FREE_VIDEOS},
             total_images INTEGER DEFAULT 0,
             total_videos INTEGER DEFAULT 0,
             registered_at TEXT DEFAULT CURRENT_TIMESTAMP,
             is_banned INTEGER DEFAULT 0
         )
-    """, (FREE_IMAGES, FREE_VIDEOS))
+    """)
 
     # Таблица транзакций
     cursor.execute("""
