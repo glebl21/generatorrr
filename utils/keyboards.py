@@ -12,6 +12,15 @@ def main_menu_kb():
     )
 
 
+def image_type_kb():
+    """Выбор типа генерации картинки"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ По промпту", callback_data="img_prompt")],
+        [InlineKeyboardButton(text="🖼 Фото + промпт", callback_data="img_photo")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")],
+    ])
+
+
 def video_duration_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [
