@@ -1,4 +1,5 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+import os
 
 
 def main_menu_kb():
@@ -13,12 +14,44 @@ def main_menu_kb():
 
 
 def image_type_kb():
-    """Выбор типа генерации картинки"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ По промпту", callback_data="img_prompt")],
         [InlineKeyboardButton(text="🖼 Фото + промпт", callback_data="img_photo")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")],
     ])
+
+
+def api_choice_kb(mode: str) -> InlineKeyboardMarkup:
+    """
+    mode = 'prompt' или 'img2img'
+    Показывает только те кнопки, для которых есть токен.
+    """
+    buttons = []
+
+    if mode == "prompt":
+        # Для генерации по промпту
+        if os.getenv("HF_TOKEN"):
+            buttons.append([InlineKeyboardButton(text="⚡ HuggingFace (FLUX) — лучшее", callback_data="api_hf")])
+        if os.getenv("TOGETHER_TOKEN"):
+            buttons.append([InlineKeyboardButton(text="🔥 Together.ai (FLUX Free)", callback_data="api_together")])
+        if os.getenv("GETIMG_TOKEN"):
+            buttons.append([InlineKeyboardButton(text="🎨 GetImg.ai (FLUX)", callback_data="api_getimg")])
+        buttons.append([InlineKeyboardButton(text="🔀 Авто (лучший доступный)", callback_data="api_auto")])
+
+    elif mode == "img2img":
+        # Для фото + промпт
+        if os.getenv("TOGETHER_TOKEN"):
+            buttons.append([InlineKeyboardButton(text="🔥 Together.ai (FLUX Depth)", callback_data="api_together")])
+        if os.getenv("REPLICATE_TOKEN"):
+            buttons.append([InlineKeyboardButton(text="🎬 Replicate (FLUX Dev)", callback_data="api_together_rep")])
+        buttons.append([InlineKeyboardButton(text="🔀 Авто (лучший доступный)", callback_data="api_auto")])
+
+    if not buttons or (len(buttons) == 1 and buttons[0][0].callback_data == "api_auto"):
+        # Нет настроенных токенов — сразу авто
+        return None
+
+    buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def video_duration_kb():
