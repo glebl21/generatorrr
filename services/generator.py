@@ -283,3 +283,44 @@ async def generate_video(prompt: str, duration: int = 5) -> bytes | None:
     except Exception as e:
         logger.error(f"Replicate video error: {e}")
     return None
+
+
+async def generate_image_img2img_replicate(image_bytes: bytes, prompt: str) -> bytes | None:
+    """img2img только через Replicate"""
+    if not REPLICATE_TOKEN:
+        logger.error("No REPLICATE_TOKEN")
+        return None
+    try:
+        b64_image = base64.b64encode(image_bytes).decode("utf-8")
+        headers = {"Authorization": f"Token {REPLICATE_TOKEN}", "Content-Type": "application/json"}
+        payload = {"input": {
+            "prompt": prompt,
+            "image": f"data:image/jpeg;base64,{b64_image}",
+            "prompt_strength": 0.8,
+        }}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.replicate.com/v1/models/black-forest-labs/flux-dev/predictions",
+                headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=30)
+            ) as resp:
+                if resp.status not in (200, 201):
+                    return None
+                prediction = await resp.json()
+                pred_id = prediction["id"]
+            for _ in range(30):
+                await asyncio.sleep(4)
+                async with session.get(
+                    f"https://api.replicate.com/v1/predictions/{pred_id}", headers=headers
+                ) as resp:
+                    data = await resp.json()
+                    if data["status"] == "succeeded":
+                        output = data.get("output")
+                        url = output[0] if isinstance(output, list) else output
+                        async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as ir:
+                            if ir.status == 200:
+                                return await ir.read()
+                    elif data["status"] == "failed":
+                        return None
+    except Exception as e:
+        logger.error(f"Replicate img2img error: {e}")
+    return None
