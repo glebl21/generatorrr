@@ -4,8 +4,12 @@ from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from database.db import get_user, create_user, use_free_image, use_free_video, deduct_balance, log_generation
-from services.generator import generate_image, generate_image_img2img, generate_video, translate_to_english, has_cyrillic
-from utils.keyboards import main_menu_kb, video_duration_kb, image_type_kb
+from services.generator import (
+    generate_image, generate_image_hf, generate_image_together, generate_image_getimg,
+    generate_image_img2img, generate_image_img2img_replicate,
+    generate_video, translate_to_english, has_cyrillic
+)
+from utils.keyboards import main_menu_kb, video_duration_kb, image_type_kb, api_choice_kb
 from config import PRICE_IMAGE, PRICE_VIDEO_SHORT, PRICE_VIDEO_LONG
 
 logger = logging.getLogger(__name__)
@@ -14,7 +18,9 @@ router = Router()
 
 class GenerateStates(StatesGroup):
     waiting_image_prompt = State()
+    choosing_prompt_api = State()
     waiting_img2img_photo = State()
+    choosing_img2img_api = State()
     waiting_img2img_prompt = State()
     choosing_video_duration = State()
     waiting_video_prompt = State()
@@ -29,7 +35,7 @@ def ensure_user(user_id, username, full_name):
 
 
 # ===========================
-#  🖼 КАРТИНКА
+#  🖼 КАРТИНКА — выбор режима
 # ===========================
 
 @router.message(F.text == "🖼 Картинка")
@@ -39,9 +45,7 @@ async def cmd_image(message: Message, state: FSMContext):
     has_balance = user["balance"] >= PRICE_IMAGE
     if not has_free and not has_balance:
         await message.answer(
-            f"❌ <b>Недостаточно средств</b>\n\n"
-            f"Баланс: {user['balance']}₽ (нужно {PRICE_IMAGE}₽)\n"
-            f"Пополните кнопкой ➕ Пополнить",
+            f"❌ <b>Недостаточно средств</b>\n\nБаланс: {user['balance']}₽ (нужно {PRICE_IMAGE}₽)\nПополните кнопкой ➕ Пополнить",
             parse_mode="HTML"
         )
         return
@@ -52,10 +56,34 @@ async def cmd_image(message: Message, state: FSMContext):
     )
 
 
-# Режим 1: только промпт
+# ===========================
+#  РЕЖИМ 1: только промпт
+# ===========================
 
 @router.callback_query(F.data == "img_prompt")
 async def img_prompt_mode(call: CallbackQuery, state: FSMContext):
+    kb = api_choice_kb("prompt")
+    if kb:
+        await call.message.edit_text(
+            "✏️ <b>Выберите сервис генерации:</b>",
+            parse_mode="HTML", reply_markup=kb
+        )
+        await state.set_state(GenerateStates.choosing_prompt_api)
+    else:
+        await call.message.edit_text(
+            "✏️ <b>По описанию</b>\n\nНапишите что хотите:\n<i>«закат над горами, реалистично, 4K»</i>",
+            parse_mode="HTML"
+        )
+        await state.update_data(prompt_api="auto")
+        await state.set_state(GenerateStates.waiting_image_prompt)
+    await call.answer()
+
+
+@router.callback_query(F.data.in_({"api_hf", "api_together", "api_getimg", "api_auto"}),
+                       GenerateStates.choosing_prompt_api)
+async def choose_prompt_api(call: CallbackQuery, state: FSMContext):
+    api = call.data.replace("api_", "")
+    await state.update_data(prompt_api=api)
     await call.message.edit_text(
         "✏️ <b>По описанию</b>\n\nНапишите что хотите:\n<i>«закат над горами, реалистично, 4K»</i>",
         parse_mode="HTML"
@@ -66,8 +94,10 @@ async def img_prompt_mode(call: CallbackQuery, state: FSMContext):
 
 @router.message(GenerateStates.waiting_image_prompt)
 async def process_image_prompt(message: Message, state: FSMContext):
+    data = await state.get_data()
     await state.clear()
     prompt = message.text.strip()
+    api = data.get("prompt_api", "auto")
     user_id = message.from_user.id
     user = get_user(user_id)
     if not user:
@@ -76,24 +106,45 @@ async def process_image_prompt(message: Message, state: FSMContext):
     if not use_free and user["balance"] < PRICE_IMAGE:
         await message.answer("❌ Недостаточно средств.")
         return
-    wait_msg = await message.answer(f"⏳ <b>Генерирую...</b>\n\n📝 <i>{prompt[:80]}</i>\n\n⏱ ~20-40 сек", parse_mode="HTML")
+
+    api_names = {"hf": "HuggingFace", "together": "Together.ai", "getimg": "GetImg.ai", "auto": "Авто"}
+    wait_msg = await message.answer(
+        f"⏳ <b>Генерирую...</b> [{api_names.get(api, api)}]\n\n📝 <i>{prompt[:80]}</i>\n\n⏱ ~20-40 сек",
+        parse_mode="HTML"
+    )
     try:
         eng = await translate_to_english(prompt) if has_cyrillic(prompt) else prompt
-        image_data = await generate_image(eng)
+        if len(eng.split()) <= 2:
+            eng = f"photo of {eng}, high quality, sharp, detailed"
+
+        if api == "hf":
+            image_data = await generate_image_hf(eng)
+        elif api == "together":
+            image_data = await generate_image_together(eng)
+        elif api == "getimg":
+            image_data = await generate_image_getimg(eng)
+        else:
+            image_data = await generate_image(eng)
+
         if not image_data:
-            await wait_msg.edit_text("❌ <b>Ошибка генерации.</b> Средства не списаны.", parse_mode="HTML")
+            await wait_msg.edit_text(
+                "❌ <b>Ошибка генерации.</b> Попробуйте другой сервис или запрос.\nСредства не списаны.",
+                parse_mode="HTML"
+            )
             return
+
         if use_free:
             use_free_image(user_id)
             note = "🎁 Бесплатный слот"
         else:
             deduct_balance(user_id, PRICE_IMAGE)
             note = f"💵 Списано {PRICE_IMAGE}₽"
+
         log_generation(user_id, "image", prompt, PRICE_IMAGE if not use_free else 0)
         await wait_msg.delete()
         await message.answer_photo(
             BufferedInputFile(image_data, "image.png"),
-            caption=f"✅ <b>Готово!</b>\n📝 <i>{prompt[:80]}</i>\n{note}",
+            caption=f"✅ <b>Готово!</b> [{api_names.get(api, api)}]\n📝 <i>{prompt[:80]}</i>\n{note}",
             parse_mode="HTML", reply_markup=main_menu_kb()
         )
     except Exception as e:
@@ -101,10 +152,34 @@ async def process_image_prompt(message: Message, state: FSMContext):
         await wait_msg.edit_text("❌ Ошибка. Попробуйте позже.")
 
 
-# Режим 2: фото + промпт
+# ===========================
+#  РЕЖИМ 2: фото + промпт
+# ===========================
 
 @router.callback_query(F.data == "img_photo")
 async def img_photo_mode(call: CallbackQuery, state: FSMContext):
+    kb = api_choice_kb("img2img")
+    if kb:
+        await call.message.edit_text(
+            "🖼 <b>Фото + промпт</b>\n\nСначала выберите сервис:",
+            parse_mode="HTML", reply_markup=kb
+        )
+        await state.set_state(GenerateStates.choosing_img2img_api)
+    else:
+        await call.message.edit_text(
+            "🖼 <b>Фото + описание</b>\n\nОтправьте фото:",
+            parse_mode="HTML"
+        )
+        await state.update_data(img2img_api="auto")
+        await state.set_state(GenerateStates.waiting_img2img_photo)
+    await call.answer()
+
+
+@router.callback_query(F.data.in_({"api_together", "api_together_rep", "api_auto"}),
+                       GenerateStates.choosing_img2img_api)
+async def choose_img2img_api(call: CallbackQuery, state: FSMContext):
+    api = call.data.replace("api_", "")
+    await state.update_data(img2img_api=api)
     await call.message.edit_text(
         "🖼 <b>Фото + описание</b>\n\nОтправьте фото которое хотите изменить:",
         parse_mode="HTML"
@@ -137,6 +212,7 @@ async def process_img2img_prompt(message: Message, state: FSMContext):
     await state.clear()
     prompt = message.text.strip()
     photo_data = data.get("photo_data")
+    api = data.get("img2img_api", "auto")
     user_id = message.from_user.id
     user = get_user(user_id)
     if not user or not photo_data:
@@ -146,24 +222,39 @@ async def process_img2img_prompt(message: Message, state: FSMContext):
     if not use_free and user["balance"] < PRICE_IMAGE:
         await message.answer("❌ Недостаточно средств.")
         return
-    wait_msg = await message.answer(f"⏳ <b>Обрабатываю фото...</b>\n\n📝 <i>{prompt[:80]}</i>\n\n⏱ ~30-60 сек", parse_mode="HTML")
+
+    api_names = {"together": "Together.ai", "together_rep": "Replicate", "auto": "Авто"}
+    wait_msg = await message.answer(
+        f"⏳ <b>Обрабатываю фото...</b> [{api_names.get(api, api)}]\n\n📝 <i>{prompt[:80]}</i>\n\n⏱ ~30-60 сек",
+        parse_mode="HTML"
+    )
     try:
         eng = await translate_to_english(prompt) if has_cyrillic(prompt) else prompt
-        image_data = await generate_image_img2img(photo_data, eng)
+
+        if api == "together_rep":
+            image_data = await generate_image_img2img_replicate(photo_data, eng)
+        else:
+            image_data = await generate_image_img2img(photo_data, eng)
+
         if not image_data:
-            await wait_msg.edit_text("❌ <b>Ошибка.</b> Средства не списаны.", parse_mode="HTML")
+            await wait_msg.edit_text(
+                "❌ <b>Ошибка.</b> Попробуйте другой сервис.\nСредства не списаны.",
+                parse_mode="HTML"
+            )
             return
+
         if use_free:
             use_free_image(user_id)
             note = "🎁 Бесплатный слот"
         else:
             deduct_balance(user_id, PRICE_IMAGE)
             note = f"💵 Списано {PRICE_IMAGE}₽"
+
         log_generation(user_id, "img2img", prompt, PRICE_IMAGE if not use_free else 0)
         await wait_msg.delete()
         await message.answer_photo(
             BufferedInputFile(image_data, "result.png"),
-            caption=f"✅ <b>Готово!</b>\n📝 <i>{prompt[:80]}</i>\n{note}",
+            caption=f"✅ <b>Готово!</b> [{api_names.get(api, api)}]\n📝 <i>{prompt[:80]}</i>\n{note}",
             parse_mode="HTML", reply_markup=main_menu_kb()
         )
     except Exception as e:
@@ -182,9 +273,7 @@ async def cmd_video(message: Message, state: FSMContext):
     has_balance = user["balance"] >= PRICE_VIDEO_SHORT
     if not has_free and not has_balance:
         await message.answer(
-            f"❌ <b>Недостаточно средств</b>\n\n"
-            f"Баланс: {user['balance']}₽ (минимум {PRICE_VIDEO_SHORT}₽)\n"
-            f"Пополните кнопкой ➕ Пополнить",
+            f"❌ <b>Недостаточно средств</b>\n\nБаланс: {user['balance']}₽ (минимум {PRICE_VIDEO_SHORT}₽)\nПополните кнопкой ➕ Пополнить",
             parse_mode="HTML"
         )
         return
