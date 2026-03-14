@@ -21,37 +21,48 @@ def image_type_kb():
     ])
 
 
-def api_choice_kb(mode: str) -> InlineKeyboardMarkup:
-    """
-    mode = 'prompt' или 'img2img'
-    Показывает только те кнопки, для которых есть токен.
-    """
+def api_choice_kb(mode: str):
     buttons = []
-
     if mode == "prompt":
-        # Для генерации по промпту
         if os.getenv("HF_TOKEN"):
-            buttons.append([InlineKeyboardButton(text="⚡ HuggingFace (FLUX) — лучшее", callback_data="api_hf")])
+            buttons.append([InlineKeyboardButton(text="⚡ HuggingFace FLUX — лучшее", callback_data="api_hf")])
         if os.getenv("TOGETHER_TOKEN"):
-            buttons.append([InlineKeyboardButton(text="🔥 Together.ai (FLUX Free)", callback_data="api_together")])
+            buttons.append([InlineKeyboardButton(text="🔥 Together.ai FLUX Free", callback_data="api_together")])
         if os.getenv("GETIMG_TOKEN"):
-            buttons.append([InlineKeyboardButton(text="🎨 GetImg.ai (FLUX)", callback_data="api_getimg")])
+            buttons.append([InlineKeyboardButton(text="🎨 GetImg.ai FLUX", callback_data="api_getimg")])
         buttons.append([InlineKeyboardButton(text="🔀 Авто (лучший доступный)", callback_data="api_auto")])
-
     elif mode == "img2img":
-        # Для фото + промпт
         if os.getenv("TOGETHER_TOKEN"):
-            buttons.append([InlineKeyboardButton(text="🔥 Together.ai (FLUX Depth)", callback_data="api_together")])
+            buttons.append([InlineKeyboardButton(text="🔥 Together.ai FLUX Depth", callback_data="api_together")])
         if os.getenv("REPLICATE_TOKEN"):
-            buttons.append([InlineKeyboardButton(text="🎬 Replicate (FLUX Dev)", callback_data="api_together_rep")])
+            buttons.append([InlineKeyboardButton(text="🎬 Replicate FLUX Dev", callback_data="api_together_rep")])
         buttons.append([InlineKeyboardButton(text="🔀 Авто (лучший доступный)", callback_data="api_auto")])
-
-    if not buttons or (len(buttons) == 1 and buttons[0][0].callback_data == "api_auto"):
-        # Нет настроенных токенов — сразу авто
-        return None
-
     buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def topup_method_kb():
+    """Выбор способа оплаты"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⭐ Telegram Stars (мгновенно)", callback_data="pay_stars")],
+        [InlineKeyboardButton(text="💳 Карта / СБП (вручную)", callback_data="pay_manual")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")],
+    ])
+
+
+def stars_amounts_kb():
+    """Суммы для оплаты звёздами"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="50 ⭐ → 60₽", callback_data="stars_50"),
+            InlineKeyboardButton(text="100 ⭐ → 125₽", callback_data="stars_100"),
+        ],
+        [
+            InlineKeyboardButton(text="200 ⭐ → 260₽", callback_data="stars_200"),
+            InlineKeyboardButton(text="500 ⭐ → 650₽", callback_data="stars_500"),
+        ],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")],
+    ])
 
 
 def video_duration_kb():
