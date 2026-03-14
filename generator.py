@@ -37,10 +37,11 @@ def has_cyrillic(text: str) -> bool:
 
 
 # ============================================================
-#  ГЕНЕРАЦИЯ КАРТИНОК
+#  КАРТИНКИ — отдельные функции для каждого API
 # ============================================================
 
-async def _hf_generate(prompt: str) -> bytes | None:
+async def generate_image_hf(prompt: str) -> bytes | None:
+    """HuggingFace Router — требует HF_TOKEN"""
     if not HF_TOKEN:
         return None
     models = [
@@ -61,6 +62,7 @@ async def _hf_generate(prompt: str) -> bytes | None:
                         if len(data) > 1000:
                             return data
                     elif resp.status == 503:
+                        logger.info("HF loading, wait 20s...")
                         await asyncio.sleep(20)
                         async with session.post(url, headers=headers, json={"inputs": prompt},
                                                 timeout=aiohttp.ClientTimeout(total=120)) as r2:
@@ -76,7 +78,8 @@ async def _hf_generate(prompt: str) -> bytes | None:
     return None
 
 
-async def _together_generate(prompt: str) -> bytes | None:
+async def generate_image_together(prompt: str) -> bytes | None:
+    """Together.ai — требует TOGETHER_TOKEN"""
     if not TOGETHER_TOKEN:
         return None
     try:
@@ -107,7 +110,8 @@ async def _together_generate(prompt: str) -> bytes | None:
     return None
 
 
-async def _getimg_generate(prompt: str) -> bytes | None:
+async def generate_image_getimg(prompt: str) -> bytes | None:
+    """GetImg.ai — требует GETIMG_TOKEN, 100 бесплатных/месяц"""
     if not GETIMG_TOKEN:
         return None
     try:
@@ -137,26 +141,27 @@ async def _getimg_generate(prompt: str) -> bytes | None:
 
 
 async def generate_image(prompt: str) -> bytes | None:
+    """Авто — пробует все доступные API по очереди"""
     if len(prompt.split()) <= 2:
         prompt = f"photo of {prompt}, high quality, sharp, detailed"
-    logger.info(f"generate_image: '{prompt[:80]}'")
+    logger.info(f"generate_image auto: '{prompt[:80]}'")
 
     if HF_TOKEN:
-        result = await _hf_generate(prompt)
+        result = await generate_image_hf(prompt)
         if result:
             return result
 
     if TOGETHER_TOKEN:
-        result = await _together_generate(prompt)
+        result = await generate_image_together(prompt)
         if result:
             return result
 
     if GETIMG_TOKEN:
-        result = await _getimg_generate(prompt)
+        result = await generate_image_getimg(prompt)
         if result:
             return result
 
-    logger.error("ALL image methods failed. Add HF_TOKEN or TOGETHER_TOKEN in Railway Variables.")
+    logger.error("ALL image methods failed.")
     return None
 
 
@@ -165,7 +170,8 @@ async def generate_image(prompt: str) -> bytes | None:
 # ============================================================
 
 async def generate_image_img2img(image_bytes: bytes, prompt: str) -> bytes | None:
-    # 1. Together.ai img2img
+    """Авто img2img — Together.ai потом Replicate"""
+    # 1. Together.ai
     if TOGETHER_TOKEN:
         try:
             b64_image = base64.b64encode(image_bytes).decode("utf-8")
@@ -194,58 +200,63 @@ async def generate_image_img2img(image_bytes: bytes, prompt: str) -> bytes | Non
         except Exception as e:
             logger.error(f"Together img2img error: {e}")
 
-    # 2. Replicate flux-dev img2img
-    if REPLICATE_TOKEN:
-        try:
-            b64_image = base64.b64encode(image_bytes).decode("utf-8")
-            headers = {"Authorization": f"Token {REPLICATE_TOKEN}", "Content-Type": "application/json"}
-            payload = {"input": {
-                "prompt": prompt,
-                "image": f"data:image/jpeg;base64,{b64_image}",
-                "prompt_strength": 0.8,
-            }}
-            logger.info("Replicate img2img: generating")
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    "https://api.replicate.com/v1/models/black-forest-labs/flux-dev/predictions",
-                    headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=30)
-                ) as resp:
-                    if resp.status not in (200, 201):
-                        return None
-                    prediction = await resp.json()
-                    pred_id = prediction["id"]
-                for _ in range(30):
-                    await asyncio.sleep(4)
-                    async with session.get(
-                        f"https://api.replicate.com/v1/predictions/{pred_id}", headers=headers
-                    ) as resp:
-                        data = await resp.json()
-                        if data["status"] == "succeeded":
-                            output = data.get("output")
-                            url = output[0] if isinstance(output, list) else output
-                            async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as ir:
-                                if ir.status == 200:
-                                    return await ir.read()
-                        elif data["status"] == "failed":
-                            return None
-        except Exception as e:
-            logger.error(f"Replicate img2img error: {e}")
+    # 2. Replicate fallback
+    return await generate_image_img2img_replicate(image_bytes, prompt)
 
-    logger.error("img2img failed. Need TOGETHER_TOKEN or REPLICATE_TOKEN.")
+
+async def generate_image_img2img_replicate(image_bytes: bytes, prompt: str) -> bytes | None:
+    """img2img через Replicate — требует REPLICATE_TOKEN"""
+    if not REPLICATE_TOKEN:
+        logger.error("No REPLICATE_TOKEN for img2img")
+        return None
+    try:
+        b64_image = base64.b64encode(image_bytes).decode("utf-8")
+        headers = {"Authorization": f"Token {REPLICATE_TOKEN}", "Content-Type": "application/json"}
+        payload = {"input": {
+            "prompt": prompt,
+            "image": f"data:image/jpeg;base64,{b64_image}",
+            "prompt_strength": 0.8,
+        }}
+        logger.info("Replicate img2img: generating")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.replicate.com/v1/models/black-forest-labs/flux-dev/predictions",
+                headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=30)
+            ) as resp:
+                if resp.status not in (200, 201):
+                    err = await resp.text()
+                    logger.error(f"Replicate img2img start failed: {err[:150]}")
+                    return None
+                prediction = await resp.json()
+                pred_id = prediction["id"]
+            for _ in range(30):
+                await asyncio.sleep(4)
+                async with session.get(
+                    f"https://api.replicate.com/v1/predictions/{pred_id}", headers=headers
+                ) as resp:
+                    data = await resp.json()
+                    if data["status"] == "succeeded":
+                        output = data.get("output")
+                        url = output[0] if isinstance(output, list) else output
+                        async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as ir:
+                            if ir.status == 200:
+                                return await ir.read()
+                    elif data["status"] == "failed":
+                        logger.error(f"Replicate img2img failed: {data.get('error')}")
+                        return None
+    except Exception as e:
+        logger.error(f"Replicate img2img error: {e}")
     return None
 
 
 # ============================================================
-#  ГЕНЕРАЦИЯ ВИДЕО
+#  ВИДЕО
 # ============================================================
 
 async def generate_video(prompt: str, duration: int = 5) -> bytes | None:
-    logger.info(f"generate_video: '{prompt[:60]}' {duration}s")
-
     if not REPLICATE_TOKEN:
         logger.error("No REPLICATE_TOKEN. Add it in Railway Variables.")
         return None
-
     try:
         headers = {"Authorization": f"Token {REPLICATE_TOKEN}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:
@@ -282,45 +293,4 @@ async def generate_video(prompt: str, duration: int = 5) -> bytes | None:
                         return None
     except Exception as e:
         logger.error(f"Replicate video error: {e}")
-    return None
-
-
-async def generate_image_img2img_replicate(image_bytes: bytes, prompt: str) -> bytes | None:
-    """img2img только через Replicate"""
-    if not REPLICATE_TOKEN:
-        logger.error("No REPLICATE_TOKEN")
-        return None
-    try:
-        b64_image = base64.b64encode(image_bytes).decode("utf-8")
-        headers = {"Authorization": f"Token {REPLICATE_TOKEN}", "Content-Type": "application/json"}
-        payload = {"input": {
-            "prompt": prompt,
-            "image": f"data:image/jpeg;base64,{b64_image}",
-            "prompt_strength": 0.8,
-        }}
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://api.replicate.com/v1/models/black-forest-labs/flux-dev/predictions",
-                headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=30)
-            ) as resp:
-                if resp.status not in (200, 201):
-                    return None
-                prediction = await resp.json()
-                pred_id = prediction["id"]
-            for _ in range(30):
-                await asyncio.sleep(4)
-                async with session.get(
-                    f"https://api.replicate.com/v1/predictions/{pred_id}", headers=headers
-                ) as resp:
-                    data = await resp.json()
-                    if data["status"] == "succeeded":
-                        output = data.get("output")
-                        url = output[0] if isinstance(output, list) else output
-                        async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as ir:
-                            if ir.status == 200:
-                                return await ir.read()
-                    elif data["status"] == "failed":
-                        return None
-    except Exception as e:
-        logger.error(f"Replicate img2img error: {e}")
     return None
