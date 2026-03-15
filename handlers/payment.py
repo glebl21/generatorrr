@@ -68,17 +68,35 @@ async def pay_yukassa_menu(call: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("yukassa_"))
-async def process_yukassa_payment(call: CallbackQuery, bot: Bot):
+async def process_yukassa_payment(call: CallbackQuery, state: FSMContext, bot: Bot):
     data = call.data.replace("yukassa_", "")
 
     if data == "custom":
         await call.message.edit_text("💬 Введите сумму пополнения (минимум 60₽):")
+        await state.set_state(PaymentStates.waiting_yukassa_amount)
         await call.answer()
         return
 
     amount = int(data)
     await create_yukassa_payment(call.message, call.from_user.id, amount, bot)
     await call.answer()
+
+
+@router.message(PaymentStates.waiting_yukassa_amount)
+async def process_yukassa_custom_amount(message: Message, state: FSMContext, bot: Bot):
+    await state.clear()
+    try:
+        amount = int(message.text.strip())
+        if amount < 60:
+            await message.answer("❌ Минимум 60₽")
+            return
+        if amount > 100000:
+            await message.answer("❌ Максимум 100 000₽")
+            return
+    except ValueError:
+        await message.answer("❌ Введите число")
+        return
+    await create_yukassa_payment(message, message.from_user.id, amount, bot)
 
 
 async def create_yukassa_payment(msg, user_id: int, amount: int, bot: Bot):
