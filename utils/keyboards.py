@@ -62,6 +62,7 @@ def yukassa_amounts_kb():
             InlineKeyboardButton(text="500₽", callback_data="yukassa_500"),
             InlineKeyboardButton(text="1000₽", callback_data="yukassa_1000"),
         ],
+        [InlineKeyboardButton(text="💬 Любая сумма", callback_data="yukassa_custom")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")],
     ])
 
