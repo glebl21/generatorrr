@@ -42,16 +42,31 @@ def api_choice_kb(mode: str):
 
 
 def topup_method_kb():
-    """Выбор способа оплаты"""
+    buttons = []
+    if os.getenv("YUKASSA_SHOP_ID"):
+        buttons.append([InlineKeyboardButton(text="💳 Карта / СБП (ЮКасса)", callback_data="pay_yukassa")])
+    buttons.append([InlineKeyboardButton(text="⭐ Telegram Stars", callback_data="pay_stars")])
+    buttons.append([InlineKeyboardButton(text="💵 Перевод на карту (вручную)", callback_data="pay_manual")])
+    buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def yukassa_amounts_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⭐ Telegram Stars (мгновенно)", callback_data="pay_stars")],
-        [InlineKeyboardButton(text="💳 Карта / СБП (вручную)", callback_data="pay_manual")],
+        [
+            InlineKeyboardButton(text="60₽", callback_data="yukassa_60"),
+            InlineKeyboardButton(text="100₽", callback_data="yukassa_100"),
+            InlineKeyboardButton(text="200₽", callback_data="yukassa_200"),
+        ],
+        [
+            InlineKeyboardButton(text="500₽", callback_data="yukassa_500"),
+            InlineKeyboardButton(text="1000₽", callback_data="yukassa_1000"),
+        ],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")],
     ])
 
 
 def stars_amounts_kb():
-    """Суммы для оплаты звёздами"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="50 ⭐ → 60₽", callback_data="stars_50"),
@@ -120,4 +135,3 @@ def back_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад", callback_data="cancel")]
     ])
-
